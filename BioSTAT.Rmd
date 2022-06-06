@@ -1,0 +1,188 @@
+---
+title: "BioSTAT"
+output: html_document
+date: '2022-06-06'
+---
+
+```{r setup, include=FALSE}
+
+```
+
+## PBC data normality+survival prediction 
+
+
+```{r cars}
+library(nortest)
+library(survival)
+library(survminer)
+library(glmnet)
+library(stargazer)
+
+# load data
+pbc
+data(pbc, package="survival")
+sum <- as.data.frame(stargazer(pbc, type = "text"))
+
+#normality test
+pbc <- na.omit(pbc)
+pbc$sex <- as.numeric(pbc$sex)
+for(i in 2:ncol(pbc)){
+  print(paste(colnames(pbc)[i],"ks test",round(lillie.test(pbc[,i])$p.value,8)))
+  print(paste(colnames(pbc)[i],"sw test",round(shapiro.test(pbc[,i])$p.value,8)))
+}
+par( mfrow = c(4,5))
+for (i in 2:20){
+  qqnorm(pbc[,i],main = colnames(pbc)[i])
+  qqline(pbc[,i])
+}
+dev.off()
+
+#Survival Analysis
+res.cox <- coxph(Surv(time,status==2)~., data=pbc)
+summary(res.cox)
+# create the curve for the cox model
+Cox_curve <- survfit(res.cox)
+plot(Cox_curve)
+dev.off()
+coxph(Surv(time,status==2)~age+sqrt(ascites)+sqrt(edema)+log(albumin)+log(copper)+log(ast)+sqrt(stage), data=pbc)
+
+#Lasso Regression
+x <- as.matrix(pbc[,4:20])
+x <- na.omit(x)
+y <- Surv(pbc$time,pbc$status==2)
+lasso <- glmnet(x, y, family = "cox")
+print(lasso)
+plot(lasso, xvar = "lambda", label = TRUE)
+
+# cross validation 
+lasso.fit <- cv.glmnet(x,y,alpha=1,family='cox',nfolds=10)
+plot(lasso.fit)
+coef(lasso.fit,s='lambda.min')
+
+# hazards assumption test
+test.ph <- cox.zph(res.cox)
+
+# non-linear test Martingale residuals
+
+print(colnames(pbc))
+ggcoxfunctional(Surv(time, status==2) ~stage+ log(stage+1) + sqrt(stage), data = pbc)
+
+```
+
+
+### stan model
+```{r pressure, echo=FALSE}
+lm_t5 <- "
+
+data {
+
+int N;             ## the number of observations
+
+vector [N] y;      ## the response
+
+vector [N] x;      ## the predictor
+
+real x_bar;        ## median of X[N]
+
+}
+
+ 
+
+parameters {
+
+real alpha;              ## regression intercept parameter
+
+real beta;               ## the regression slope parameter
+
+log_sigma;     ## the standard deviation
+
+}
+
+ 
+
+transformed parameters {
+
+real<lower = 0> sigma;
+
+sigma = exp(log_sigma);
+
+vector[N] mu;
+
+mu = (x - x_bar)* beta + alpha;
+
+}
+
+ 
+
+model { 
+
+y ~ student_t(5, mu, sigma);
+
+}
+
+ 
+
+"
+```
+
+
+```{r}
+###Stan model for directly modeling duplicates mean across patients (y_i ~ t_5 (mu_i, sigma))
+
+ 
+
+mu_stan <- "
+
+ 
+
+data {
+
+int<lower=0> N;              // Number of patients
+
+vector[N] y_1;               // Value of duplicate 1 of patients
+
+vector[N] y_2;               // Value of duplicate 2 of patients
+
+}
+
+ 
+
+parameters {
+
+vector[N] log_mu;
+
+real log_sigma;
+
+}
+
+ 
+
+transformed parameters{
+
+vector[N] mu;
+
+mu = exp(mu);
+
+real<lower = 0> sigma;
+
+sigma = exp(log_sigma);
+
+}
+
+ 
+
+model { 
+
+for (n in 1:N) { 
+
+target += student_t_lpdf([y_1[n], y_2[n]] | 5, mu[n], sigma);
+
+}
+
+}
+
+ 
+
+"
+
+```
